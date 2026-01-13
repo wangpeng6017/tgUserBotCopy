@@ -1,0 +1,25 @@
+[Unit]
+Description=Telegram User Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/path/to/tgUserBot
+Environment="PATH=/path/to/tgUserBot/tg_env/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/path/to/tgUserBot/tg_env/bin/python /path/to/tgUserBot/main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 日志配置
+SyslogIdentifier=tguserbot
+
+# 安全设置（可选）
+# NoNewPrivileges=true
+# PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+

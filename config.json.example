@@ -1,0 +1,7 @@
+{
+    "api_id": 12345678,
+    "api_hash": "your_api_hash_here",
+    "target_bot_username": "your_bot_username",
+    "log_dir": "logs"
+}
+

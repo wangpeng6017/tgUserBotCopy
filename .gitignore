@@ -1,0 +1,33 @@
+# 配置文件（包含敏感信息）
+config.json
+
+# 会话文件
+*.session
+*.session-journal
+
+# 日志文件
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+tg_env/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
