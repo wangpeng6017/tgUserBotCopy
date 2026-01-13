@@ -69,9 +69,29 @@ logger.info(f"日志文件路径: {log_file}")
 # 创建 Telegram 客户端
 client = TelegramClient('anon', api_id, api_hash)
 
+# 记录启动时间，用于过滤历史消息
+start_time = None
+
 @client.on(events.NewMessage())
 async def handler(event):
     try:
+        # 只处理启动后收到的新消息，忽略历史消息
+        if start_time is None:
+            return
+        
+        # 检查消息时间，只处理启动后的消息
+        message_time = event.message.date
+        # 确保时间对象都有时区信息，统一转换为 UTC 进行比较
+        if message_time.tzinfo is None:
+            # 如果没有时区信息，假设是 UTC
+            from datetime import timezone
+            message_time = message_time.replace(tzinfo=timezone.utc)
+        
+        if message_time < start_time:
+            # 这是历史消息，忽略
+            logger.debug(f"忽略历史消息 ID {event.message.id} (消息时间: {message_time}, 启动时间: {start_time})")
+            return
+        
         sender = await event.get_sender()
         # 判断是否为目标机器人
         if sender and sender.username == target_bot_username:
@@ -92,10 +112,15 @@ async def handler(event):
         logger.error(f"处理消息时发生错误: {str(e)}", exc_info=True)
 
 async def main():
+    global start_time
     try:
         await client.start()
+        # 记录启动时间，用于过滤历史消息
+        from datetime import timezone
+        start_time = datetime.now(timezone.utc)
         logger.info("Telegram 客户端已启动")
-        logger.info("已开始监听所有群的指定机器人消息...")
+        logger.info(f"启动时间: {start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        logger.info("已开始监听所有群的指定机器人消息（仅处理启动后的新消息）...")
         await client.run_until_disconnected()
     except SessionPasswordNeededError:
         logger.error("需要两步验证密码，请在交互式环境中运行一次以完成登录")
