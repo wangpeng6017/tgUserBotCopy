@@ -32,7 +32,17 @@
    # 上传项目文件
    ```
 
-2. **创建虚拟环境**
+2. **安装 Python 和虚拟环境支持**
+   ```bash
+   # Ubuntu/Debian
+   sudo apt update
+   sudo apt install python3 python3-pip python3-venv -y
+   
+   # 如果遇到 "ensurepip is not available" 错误，安装对应版本：
+   sudo apt install python3.12-venv -y  # 根据你的 Python 版本调整
+   ```
+
+3. **创建虚拟环境**
    ```bash
    cd tgUserBot
    python3 -m venv tg_env
@@ -41,18 +51,18 @@
    pip install telethon
    ```
 
-3. **配置项目**
+4. **配置项目**
    ```bash
    cp config.json.example config.json
    nano config.json  # 编辑配置文件
    ```
 
-4. **首次登录**
+5. **首次登录**
    ```bash
    python main.py  # 登录后 Ctrl+C 退出
    ```
 
-5. **安装服务**
+6. **安装服务**
    ```bash
    chmod +x install_service.sh
    ./install_service.sh

@@ -35,6 +35,14 @@
 ### 一键部署命令（适用于已配置好环境的服务器）
 
 ```bash
+# 0. 安装 Python 和虚拟环境支持（如果未安装）
+sudo apt update
+sudo apt install python3 python3-pip python3-venv -y
+
+# 如果创建虚拟环境时遇到 "ensurepip is not available" 错误：
+# 根据你的 Python 版本安装对应包（例如 Python 3.12）：
+sudo apt install python3.12-venv -y
+
 # 1. 克隆或上传项目
 cd /home/your_username
 # 上传项目文件到此目录
@@ -89,11 +97,20 @@ sudo yum update -y
 sudo dnf update -y
 ```
 
-#### 1.3 安装 Python 3.9+
+#### 1.3 安装 Python 3.9+ 和虚拟环境支持
 
 ```bash
 # Ubuntu/Debian
+sudo apt update
 sudo apt install python3 python3-pip python3-venv -y
+
+# 如果遇到 "ensurepip is not available" 错误，需要安装对应版本的 venv 包
+# 例如 Python 3.12：
+sudo apt install python3.12-venv -y
+# 或 Python 3.10：
+sudo apt install python3.10-venv -y
+# 或 Python 3.9：
+sudo apt install python3.9-venv -y
 
 # CentOS/Rocky Linux
 sudo yum install python3 python3-pip -y
@@ -103,6 +120,10 @@ sudo dnf install python3 python3-pip -y
 # 验证 Python 版本
 python3 --version
 # 应该显示 Python 3.9.x 或更高版本
+
+# 验证 venv 模块是否可用
+python3 -m venv --help
+# 如果显示帮助信息，说明 venv 可用
 ```
 
 ---
@@ -152,6 +173,22 @@ ls -la
 cd /home/username/tgUserBot
 
 # 创建虚拟环境
+python3 -m venv tg_env
+
+# 如果遇到错误 "ensurepip is not available"，执行以下命令：
+# 1. 检查 Python 版本
+python3 --version
+
+# 2. 安装对应版本的 venv 包（根据你的 Python 版本选择）
+# Python 3.12:
+sudo apt install python3.12-venv -y
+# Python 3.10:
+sudo apt install python3.10-venv -y
+# Python 3.9:
+sudo apt install python3.9-venv -y
+
+# 3. 重新创建虚拟环境
+rm -rf tg_env  # 如果之前创建失败，先删除
 python3 -m venv tg_env
 
 # 激活虚拟环境
@@ -405,6 +442,40 @@ ls -lh /path/to/tgUserBot/logs/
 ---
 
 ## 故障排查
+
+### 问题 0: 无法创建虚拟环境
+
+**错误信息：**
+```
+The virtual environment was not created successfully because ensurepip is not available.
+```
+
+**解决方案：**
+
+```bash
+# 1. 检查 Python 版本
+python3 --version
+
+# 2. 安装对应版本的 venv 包
+# Ubuntu/Debian - 根据你的 Python 版本选择：
+sudo apt install python3.12-venv -y  # Python 3.12
+# 或
+sudo apt install python3.10-venv -y   # Python 3.10
+# 或
+sudo apt install python3.9-venv -y    # Python 3.9
+
+# 3. 如果不知道具体版本，可以安装所有版本（推荐）
+sudo apt install python3-venv -y
+
+# 4. 重新创建虚拟环境
+rm -rf tg_env  # 如果之前创建失败，先删除
+python3 -m venv tg_env
+
+# 5. 验证虚拟环境
+source tg_env/bin/activate
+which python
+python --version
+```
 
 ### 问题 1: 服务无法启动
 
