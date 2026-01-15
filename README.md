@@ -1,10 +1,10 @@
 # Telegram User Bot
 
-一个基于 Telethon 的 Telegram 用户机器人，用于监听指定机器人的消息并自动复制到对应群组。
+一个基于 Telethon 的 Telegram 用户机器人，用于监听指定用户（机器人或普通用户）的消息并自动复制到对应群组。
 
 ## ✨ 功能特性
 
-- 🔍 监听所有群组中的指定机器人消息
+- 🔍 监听所有群组中的指定用户消息（支持机器人和普通用户）
 - 📋 自动复制消息到对应群组
 - 🖼️ 支持文本和媒体（图片、视频等）消息
 - ⏰ **智能过滤历史消息**：只处理启动后的新消息，避免处理历史消息导致重复发送
@@ -81,9 +81,7 @@
     "api_id": 12345678,
     "api_hash": "your_api_hash_here",
     "target_bot_username": "your_bot_username",
-    "log_dir": "logs",
-    "send_interval": 2,
-    "jitter": 0.5
+    "log_dir": "logs"
 }
 ```
 
@@ -91,10 +89,8 @@
 
 - `api_id`: Telegram API ID（从 https://my.telegram.org/apps 获取）
 - `api_hash`: Telegram API Hash
-- `target_bot_username`: 要监听的机器人用户名（不带 @）
+- `target_bot_username`: 要监听的用户名（可以是机器人或普通用户，不带 @）
 - `log_dir`: 日志目录（相对路径或绝对路径，默认 "logs"）
-- `send_interval`: 消息发送基础间隔（秒），用于控制发送频率避免被风控（默认 2 秒，建议 1-5 秒）
-- `jitter`: 随机抖动时间（秒），在基础间隔上增加随机延迟，让发送时间更自然（默认 0.5 秒，建议 0.3-1.0 秒）
 
 ## 📖 使用方法
 
