@@ -2,9 +2,11 @@ import logging
 import sys
 import os
 import json
+import asyncio
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError
+from collections import namedtuple
 
 # 加载配置文件
 def load_config():
@@ -40,6 +42,8 @@ config = load_config()
 api_id = config['api_id']
 api_hash = config['api_hash']
 target_bot_username = config['target_bot_username']
+# 发送间隔（秒），默认 2 秒，避免被风控
+send_interval = config.get('send_interval', 2)
 
 # 配置日志路径（支持相对路径和绝对路径）
 log_dir_config = config.get('log_dir', 'logs')
@@ -72,6 +76,54 @@ client = TelegramClient('anon', api_id, api_hash)
 # 记录启动时间，用于过滤历史消息
 start_time = None
 
+# 消息队列和消息结构
+MessageTask = namedtuple('MessageTask', ['chat_id', 'msg_text', 'media', 'message_id'])
+message_queue = asyncio.Queue()
+queue_processor_task = None
+
+async def queue_processor():
+    """队列处理器：从队列中取出消息并发送，控制发送频率"""
+    global message_queue
+    while True:
+        try:
+            # 从队列中获取消息
+            task = await message_queue.get()
+            
+            if task is None:  # 停止信号
+                break
+            
+            try:
+                # 发送消息
+                if task.media:
+                    # 如果有媒体，发送消息和媒体
+                    await client.send_message(task.chat_id, task.msg_text, file=task.media)
+                    logger.info(f"已复制消息（含媒体）到群组 {task.chat_id}: {task.msg_text[:100]}...")
+                else:
+                    # 如果只有文本，只发送文本
+                    await client.send_message(task.chat_id, task.msg_text)
+                    logger.info(f"已复制消息到群组 {task.chat_id}: {task.msg_text[:100]}...")
+                
+                # 记录队列状态
+                queue_size = message_queue.qsize()
+                if queue_size > 0:
+                    logger.debug(f"队列中还有 {queue_size} 条消息待处理")
+                
+            except Exception as e:
+                logger.error(f"发送消息到群组 {task.chat_id} 时发生错误: {str(e)}", exc_info=True)
+            finally:
+                # 标记任务完成
+                message_queue.task_done()
+            
+            # 延迟发送，避免被风控
+            await asyncio.sleep(send_interval)
+            
+        except asyncio.CancelledError:
+            logger.info("队列处理器被取消")
+            break
+        except Exception as e:
+            logger.error(f"队列处理器发生错误: {str(e)}", exc_info=True)
+            await asyncio.sleep(1)  # 出错后等待 1 秒再继续
+
 @client.on(events.NewMessage())
 async def handler(event):
     try:
@@ -98,21 +150,25 @@ async def handler(event):
             # 获取消息所在的群组ID
             chat_id = event.chat_id
             msg_text = event.message.message or ''
+            media = event.message.media if event.message.media else None
             
-            # 检查消息是否包含媒体（图片、视频等）
-            if event.message.media:
-                # 如果有媒体，发送消息和媒体到对应群组
-                await client.send_message(chat_id, msg_text, file=event.message.media)
-                logger.info(f"已复制消息（含媒体）到群组 {chat_id}: {msg_text[:100]}...")
-            else:
-                # 如果只有文本，只发送文本到对应群组
-                await client.send_message(chat_id, msg_text)
-                logger.info(f"已复制消息到群组 {chat_id}: {msg_text[:100]}...")
+            # 将消息加入队列，而不是直接发送
+            task = MessageTask(
+                chat_id=chat_id,
+                msg_text=msg_text,
+                media=media,
+                message_id=event.message.id
+            )
+            
+            await message_queue.put(task)
+            queue_size = message_queue.qsize()
+            logger.debug(f"消息已加入队列 (ID: {event.message.id}, 队列大小: {queue_size})")
+            
     except Exception as e:
         logger.error(f"处理消息时发生错误: {str(e)}", exc_info=True)
 
 async def main():
-    global start_time
+    global start_time, queue_processor_task
     try:
         await client.start()
         # 记录启动时间，用于过滤历史消息
@@ -120,6 +176,12 @@ async def main():
         start_time = datetime.now(timezone.utc)
         logger.info("Telegram 客户端已启动")
         logger.info(f"启动时间: {start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        logger.info(f"消息发送间隔: {send_interval} 秒")
+        
+        # 启动队列处理器
+        queue_processor_task = asyncio.create_task(queue_processor())
+        logger.info("消息队列处理器已启动")
+        
         logger.info("已开始监听所有群的指定机器人消息（仅处理启动后的新消息）...")
         await client.run_until_disconnected()
     except SessionPasswordNeededError:
@@ -131,6 +193,24 @@ async def main():
         logger.error(f"运行时发生错误: {str(e)}", exc_info=True)
         raise
     finally:
+        # 停止队列处理器
+        if queue_processor_task and not queue_processor_task.done():
+            logger.info("正在停止队列处理器...")
+            # 等待队列中的消息处理完成（最多等待 30 秒）
+            try:
+                await asyncio.wait_for(message_queue.join(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning("队列处理超时，强制停止")
+            
+            # 发送停止信号
+            await message_queue.put(None)
+            queue_processor_task.cancel()
+            try:
+                await queue_processor_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("队列处理器已停止")
+        
         await client.disconnect()
         logger.info("Telegram 客户端已断开连接")
 

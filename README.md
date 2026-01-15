@@ -81,7 +81,8 @@
     "api_id": 12345678,
     "api_hash": "your_api_hash_here",
     "target_bot_username": "your_bot_username",
-    "log_dir": "logs"
+    "log_dir": "logs",
+    "send_interval": 2
 }
 ```
 
@@ -91,6 +92,7 @@
 - `api_hash`: Telegram API Hash
 - `target_bot_username`: 要监听的机器人用户名（不带 @）
 - `log_dir`: 日志目录（相对路径或绝对路径，默认 "logs"）
+- `send_interval`: 消息发送间隔（秒），用于控制发送频率避免被风控（默认 2 秒，建议 1-5 秒）
 
 ## 📖 使用方法
 
