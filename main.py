@@ -74,8 +74,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info(f"日志文件路径: {log_file}")
 
-# 创建 Telegram 客户端
-client = TelegramClient('anon', api_id, api_hash)
+# 创建 Telegram 客户端，使用 api_id 作为 session 文件名
+session_name = f'session_{api_id}'
+client = TelegramClient(session_name, api_id, api_hash)
 
 # 记录启动时间，用于过滤历史消息
 start_time = None
@@ -214,7 +215,8 @@ if __name__ == '__main__':
         
         # 使用同步方式启动（与 test_login.py 相同），避免异步环境中的问题
         logger.info("正在启动 Telegram 客户端（同步方式）...")
-        logger.info(f"检查 session 文件: anon.session (存在: {os.path.exists('anon.session')})")
+        session_file = f'{session_name}.session'
+        logger.info(f"检查 session 文件: {session_file} (存在: {os.path.exists(session_file)})")
         logger.info(f"发送间隔: {send_interval}秒，抖动时间: 0-{send_jitter}秒")
         logger.info(f"目标用户名: {target_bot_username}")
         
