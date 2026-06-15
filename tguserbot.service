@@ -1,5 +1,5 @@
 [Unit]
-Description=Telegram User Bot Service
+Description=Telegram User Bot Service (Multi-Account)
 After=network.target
 
 [Service]
