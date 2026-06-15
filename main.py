@@ -75,6 +75,28 @@ if distribution_strategy == 'round':
 send_interval = config.get('send_interval', 2.0)
 send_jitter = config.get('send_jitter', 1.0)
 
+def parse_text_replacements(cfg: dict) -> List[Tuple[str, str]]:
+    """解析文案替换规则，支持 text_replacements 列表或 text_prefix_replace 字典"""
+    replacements = []
+    for item in cfg.get('text_replacements', []):
+        if 'from' in item:
+            replacements.append((item['from'], item.get('to', '')))
+    if not replacements and 'text_prefix_replace' in cfg:
+        for from_str, to_str in cfg['text_prefix_replace'].items():
+            replacements.append((from_str, to_str))
+    return replacements
+
+text_replacements = parse_text_replacements(config)
+
+def apply_text_replacements(text: str) -> str:
+    """按配置替换文案中的前缀或片段"""
+    if not text or not text_replacements:
+        return text
+    result = text
+    for from_str, to_str in text_replacements:
+        result = result.replace(from_str, to_str)
+    return result
+
 # 配置日志路径（支持相对路径和绝对路径）
 log_dir_config = config.get('log_dir', 'logs')
 if os.path.isabs(log_dir_config):
@@ -99,6 +121,8 @@ logger = logging.getLogger(__name__)
 logger.info(f"日志文件路径: {log_file}")
 logger.info(f"配置了 {len(accounts)} 个账户")
 logger.info(f"分配策略: {distribution_strategy}")
+if text_replacements:
+    logger.info(f"文案替换规则: {text_replacements}")
 
 # 运行时由 main() 填充：仅包含成功启动的账户
 clients: List[TelegramClient] = []
@@ -382,11 +406,15 @@ async def handler(event):
             
             logger.info(f"✅ [{listener_name}] 匹配到目标用户: {sender.username} (ID: {sender.id})")
             media = await download_message_media(event)
+            original_text = event.message.message or ''
+            msg_text = apply_text_replacements(original_text)
+            if msg_text != original_text:
+                logger.info(f"✏️ 文案替换: {original_text[:80]!r} → {msg_text[:80]!r}")
             await enqueue_target_message(
                 event=event,
                 listener_name=listener_name,
                 chat_id=event.chat_id,
-                msg_text=event.message.message or '',
+                msg_text=msg_text,
                 media=media,
                 user_type="机器人" if sender.bot else "普通用户",
                 dedup_keys=dedup_keys,

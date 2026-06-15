@@ -18,5 +18,8 @@
     "send_interval": 2.0,
     "send_jitter": 1.0,
     "log_level": "INFO",
-    "distribution_strategy": "random"
+    "distribution_strategy": "random",
+    "text_replacements": [
+        { "from": "/ds ", "to": "" }
+    ]
 }
