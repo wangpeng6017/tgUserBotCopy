@@ -11,6 +11,13 @@ from typing import List, Dict, Set, Tuple, Optional
 from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError
 from telethon.utils import get_peer_id
+from telethon.tl.types import (
+    MessageMediaPhoto,
+    MessageMediaDocument,
+    DocumentAttributeFilename,
+    DocumentAttributeAnimated,
+    DocumentAttributeVideo,
+)
 
 # 加载配置文件
 def load_config():
@@ -109,6 +116,13 @@ our_user_ids: Set[int] = set()
 chat_client_index: Dict[int, int] = defaultdict(int)
 chat_client_usage: Dict[int, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
 
+class MediaPayload:
+    """下载后的媒体数据，携带文件名和发送方式"""
+    def __init__(self, data: bytes, filename: str, force_document: bool = False):
+        self.data = data
+        self.filename = filename
+        self.force_document = force_document
+
 class MessageTask:
     def __init__(self, chat_id, msg_text, media=None, user_type="", client_index=None, dedup_keys=None):
         self.chat_id = chat_id
@@ -176,15 +190,47 @@ def pick_sender_index(chat_id: int) -> int:
     
     return index
 
-async def download_message_media(event) -> Optional[bytes]:
-    """用监听账号下载媒体为 bytes，避免跨账号发送时 MediaEmptyError"""
+def resolve_media_send_info(message) -> Tuple[str, bool]:
+    """根据原始消息媒体类型，确定文件名和是否作为文件发送"""
+    media = message.media
+    if isinstance(media, MessageMediaPhoto):
+        return 'photo.jpg', False
+    if isinstance(media, MessageMediaDocument):
+        doc = media.document
+        mime = (doc.mime_type or '').lower()
+        filename = None
+        is_animated = False
+        is_video = False
+        for attr in doc.attributes:
+            if isinstance(attr, DocumentAttributeFilename):
+                filename = attr.file_name
+            elif isinstance(attr, DocumentAttributeAnimated):
+                is_animated = True
+            elif isinstance(attr, DocumentAttributeVideo):
+                is_video = True
+        if filename:
+            force_doc = not (
+                mime.startswith('image/') or mime.startswith('video/') or is_animated or is_video
+            )
+            return filename, force_doc
+        if mime.startswith('image/') or is_animated:
+            ext = 'gif' if is_animated else mime.split('/')[-1] or 'jpg'
+            return f'photo.{ext}', False
+        if mime.startswith('video/') or is_video:
+            return 'video.mp4', False
+        return 'file.bin', True
+    return 'file.bin', True
+
+async def download_message_media(event) -> Optional[MediaPayload]:
+    """用监听账号下载媒体，保留类型信息以便正确发送图片/视频"""
     if not event.message.media:
         return None
     try:
+        filename, force_document = resolve_media_send_info(event.message)
         data = await event.client.download_media(event.message, bytes)
         if data:
-            logger.info(f"已下载媒体文件 ({len(data)} 字节)")
-            return data
+            logger.info(f"已下载媒体: {filename} ({len(data)} 字节, force_document={force_document})")
+            return MediaPayload(data, filename, force_document)
         logger.warning("媒体下载结果为空")
     except Exception as e:
         logger.warning(f"媒体下载失败，将尝试仅发送文本: {str(e)}")
@@ -193,24 +239,33 @@ async def download_message_media(event) -> Optional[bytes]:
 async def send_task_message(client: TelegramClient, task: MessageTask) -> None:
     """发送单条任务消息"""
     if task.media:
-        media_file = io.BytesIO(task.media)
-        await client.send_message(task.chat_id, task.msg_text, file=media_file)
+        media_file = io.BytesIO(task.media.data)
+        media_file.name = task.media.filename
+        await client.send_file(
+            task.chat_id,
+            media_file,
+            caption=task.msg_text or None,
+            force_document=task.media.force_document
+        )
     else:
         await client.send_message(task.chat_id, task.msg_text)
 
-async def enqueue_target_message(event, listener_name: str, chat_id: int, msg_text: str, media_data: Optional[bytes], user_type: str, dedup_keys: List[Tuple], client_index: int) -> bool:
+async def enqueue_target_message(event, listener_name: str, chat_id: int, msg_text: str, media: Optional[MediaPayload], user_type: str, dedup_keys: List[Tuple], client_index: int) -> bool:
     """将已认领的消息入队（去重在 handler 中完成）"""
     sender_name = active_accounts[client_index]['name']
     task = MessageTask(
         chat_id=chat_id,
         msg_text=msg_text,
-        media=media_data,
+        media=media,
         user_type=user_type,
         client_index=client_index,
         dedup_keys=dedup_keys
     )
     await message_queue.put(task)
-    media_hint = f"，含媒体 {len(media_data)} 字节" if media_data else ""
+    if media:
+        media_hint = f"，含媒体 {media.filename} ({len(media.data)} 字节)"
+    else:
+        media_hint = ""
     logger.info(f"📥 [{listener_name}] 消息已入队 → 指定由 [{sender_name}] 发送{media_hint}（去重键: {dedup_keys}，队列: {message_queue.qsize()}）")
     return True
 
@@ -326,13 +381,13 @@ async def handler(event):
                 client_index = pick_sender_index(event.chat_id)
             
             logger.info(f"✅ [{listener_name}] 匹配到目标用户: {sender.username} (ID: {sender.id})")
-            media_data = await download_message_media(event)
+            media = await download_message_media(event)
             await enqueue_target_message(
                 event=event,
                 listener_name=listener_name,
                 chat_id=event.chat_id,
                 msg_text=event.message.message or '',
-                media_data=media_data,
+                media=media,
                 user_type="机器人" if sender.bot else "普通用户",
                 dedup_keys=dedup_keys,
                 client_index=client_index
