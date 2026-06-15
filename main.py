@@ -4,9 +4,10 @@ import os
 import json
 import asyncio
 import random
+import io
 from datetime import datetime, timezone
 from collections import defaultdict
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Optional
 from telethon import TelegramClient, events
 from telethon.errors import SessionPasswordNeededError
 from telethon.utils import get_peer_id
@@ -100,8 +101,8 @@ workdir = os.path.dirname(os.path.abspath(__file__))
 start_time = None
 message_queue: asyncio.Queue = None
 message_dedup_lock: asyncio.Lock = None
-queued_messages: Set[Tuple] = set()
-seen_events: Set[Tuple] = set()
+seen_by_id: Set[Tuple] = set()
+claimed_messages: Set[Tuple] = set()
 sent_messages: Set[Tuple] = set()
 our_user_ids: Set[int] = set()
 
@@ -109,26 +110,45 @@ chat_client_index: Dict[int, int] = defaultdict(int)
 chat_client_usage: Dict[int, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
 
 class MessageTask:
-    def __init__(self, chat_id, msg_text, media=None, user_type="", client_index=None, dedup_key=None):
+    def __init__(self, chat_id, msg_text, media=None, user_type="", client_index=None, dedup_keys=None):
         self.chat_id = chat_id
         self.msg_text = msg_text
         self.media = media
         self.user_type = user_type
         self.client_index = client_index
-        self.dedup_key = dedup_key
+        self.dedup_keys = dedup_keys or []
 
-def make_message_key(event) -> Tuple:
-    """生成跨账号一致的消息去重键（不依赖 message.id，不同 session 可能 id 不同）"""
+def make_id_key(event) -> Tuple:
+    """按 message.id 快速去重（同 session 内）"""
+    chat_id = get_peer_id(event.peer_id)
+    return (chat_id, event.message.sender_id or 0, event.message.id)
+
+def make_dedup_keys(event) -> List[Tuple]:
+    """生成多条去重键，兼容不同账号收到同一消息时 message.id 不一致的情况"""
     chat_id = get_peer_id(event.peer_id)
     message = event.message
     sender_id = message.sender_id or 0
+    keys = []
+    
     if getattr(message, 'grouped_id', None):
-        return (chat_id, sender_id, 'album', message.grouped_id)
+        keys.append((chat_id, sender_id, 'album', message.grouped_id))
+    
+    keys.append((chat_id, sender_id, message.id))
+    
     msg_date = int(message.date.timestamp()) if message.date else 0
     content = message.message or ''
     if not content and message.media:
         content = type(message.media).__name__
-    return (chat_id, sender_id, msg_date, content)
+    keys.append((chat_id, sender_id, msg_date, content))
+    
+    return keys
+
+def is_duplicate(keys: List[Tuple], store: Set[Tuple]) -> bool:
+    return any(k in store for k in keys)
+
+def mark_keys(keys: List[Tuple], store: Set[Tuple]) -> None:
+    for k in keys:
+        store.add(k)
 
 def pick_sender_index(chat_id: int) -> int:
     """为一条消息选定唯一发送账号（与 clientTgUserBot 相同的分配逻辑）"""
@@ -156,28 +176,42 @@ def pick_sender_index(chat_id: int) -> int:
     
     return index
 
-async def enqueue_target_message(event, listener_name: str, chat_id: int, msg_text: str, media, user_type: str) -> bool:
-    """原子操作：去重 + 选定发送账号 + 入队，保证每条消息只由一个账号发送"""
-    message_key = make_message_key(event)
-    
-    async with message_dedup_lock:
-        if message_key in queued_messages:
-            logger.info(f"⏭️ [{listener_name}] 消息已处理，跳过重复: {message_key}")
-            return False
-        queued_messages.add(message_key)
-        client_index = pick_sender_index(chat_id)
-        sender_name = active_accounts[client_index]['name']
-        task = MessageTask(
-            chat_id=chat_id,
-            msg_text=msg_text,
-            media=media,
-            user_type=user_type,
-            client_index=client_index,
-            dedup_key=message_key
-        )
-        await message_queue.put(task)
-    
-    logger.info(f"📥 [{listener_name}] 消息已入队 → 指定由 [{sender_name}] 发送（去重键: {message_key}，队列: {message_queue.qsize()}）")
+async def download_message_media(event) -> Optional[bytes]:
+    """用监听账号下载媒体为 bytes，避免跨账号发送时 MediaEmptyError"""
+    if not event.message.media:
+        return None
+    try:
+        data = await event.client.download_media(event.message, bytes)
+        if data:
+            logger.info(f"已下载媒体文件 ({len(data)} 字节)")
+            return data
+        logger.warning("媒体下载结果为空")
+    except Exception as e:
+        logger.warning(f"媒体下载失败，将尝试仅发送文本: {str(e)}")
+    return None
+
+async def send_task_message(client: TelegramClient, task: MessageTask) -> None:
+    """发送单条任务消息"""
+    if task.media:
+        media_file = io.BytesIO(task.media)
+        await client.send_message(task.chat_id, task.msg_text, file=media_file)
+    else:
+        await client.send_message(task.chat_id, task.msg_text)
+
+async def enqueue_target_message(event, listener_name: str, chat_id: int, msg_text: str, media_data: Optional[bytes], user_type: str, dedup_keys: List[Tuple], client_index: int) -> bool:
+    """将已认领的消息入队（去重在 handler 中完成）"""
+    sender_name = active_accounts[client_index]['name']
+    task = MessageTask(
+        chat_id=chat_id,
+        msg_text=msg_text,
+        media=media_data,
+        user_type=user_type,
+        client_index=client_index,
+        dedup_keys=dedup_keys
+    )
+    await message_queue.put(task)
+    media_hint = f"，含媒体 {len(media_data)} 字节" if media_data else ""
+    logger.info(f"📥 [{listener_name}] 消息已入队 → 指定由 [{sender_name}] 发送{media_hint}（去重键: {dedup_keys}，队列: {message_queue.qsize()}）")
     return True
 
 async def message_sender():
@@ -192,35 +226,44 @@ async def message_sender():
                 message_queue.task_done()
                 continue
             
-            if task.dedup_key:
-                async with message_dedup_lock:
-                    if task.dedup_key in sent_messages:
-                        logger.info(f"⏭️ 跳过重复发送: {task.dedup_key}")
-                        message_queue.task_done()
-                        continue
-                    sent_messages.add(task.dedup_key)
-            
-            send_client_index = task.client_index
-            send_client = clients[send_client_index]
-            send_client_name = active_accounts[send_client_index]['name']
-            
-            logger.info(f"从队列获取到消息，准备使用客户端 {send_client_name} 发送到群组 {task.chat_id}...")
+            async with message_dedup_lock:
+                if task.dedup_keys and is_duplicate(task.dedup_keys, sent_messages):
+                    logger.info(f"⏭️ 跳过重复发送: {task.dedup_keys}")
+                    message_queue.task_done()
+                    continue
             
             jitter = random.uniform(0, send_jitter)
             delay = send_interval + jitter
             logger.info(f"等待 {delay:.2f} 秒后发送（间隔: {send_interval}秒，抖动: {jitter:.2f}秒）...")
             await asyncio.sleep(delay)
             
-            try:
-                logger.info(f"开始使用客户端 {send_client_name} 发送消息到群组 {task.chat_id}...")
-                if task.media:
-                    await send_client.send_message(task.chat_id, task.msg_text, file=task.media)
-                    logger.info(f"✓ [{send_client_name}] 已复制{task.user_type}消息（含媒体）到群组 {task.chat_id}: {task.msg_text[:100]}...")
-                else:
-                    await send_client.send_message(task.chat_id, task.msg_text)
-                    logger.info(f"✓ [{send_client_name}] 已复制{task.user_type}消息到群组 {task.chat_id}: {task.msg_text[:100]}...")
-            except Exception as e:
-                logger.error(f"✗ [{send_client_name}] 发送消息到群组 {task.chat_id} 时发生错误: {str(e)}", exc_info=True)
+            indices_to_try = [task.client_index] + [
+                i for i in range(len(clients)) if i != task.client_index
+            ]
+            sent = False
+            last_error = None
+            
+            for idx in indices_to_try:
+                send_client = clients[idx]
+                send_client_name = active_accounts[idx]['name']
+                try:
+                    logger.info(f"开始使用客户端 {send_client_name} 发送消息到群组 {task.chat_id}...")
+                    await send_task_message(send_client, task)
+                    if task.media:
+                        logger.info(f"✓ [{send_client_name}] 已复制{task.user_type}消息（含媒体）到群组 {task.chat_id}: {task.msg_text[:100]}...")
+                    else:
+                        logger.info(f"✓ [{send_client_name}] 已复制{task.user_type}消息到群组 {task.chat_id}: {task.msg_text[:100]}...")
+                    sent = True
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.error(f"✗ [{send_client_name}] 发送失败: {str(e)}")
+            
+            if not sent and last_error:
+                logger.error(f"✗ 所有账号均发送失败，最后错误: {str(last_error)}")
+            elif sent and task.dedup_keys:
+                async with message_dedup_lock:
+                    mark_keys(task.dedup_keys, sent_messages)
             
             message_queue.task_done()
             logger.info(f"消息发送完成，当前队列剩余: {message_queue.qsize()} 条")
@@ -238,13 +281,13 @@ async def handler(event):
         if event.message.out:
             return
         
-        message_key = make_message_key(event)
-        
-        # 所有账号都监听，但同一消息只让一个 handler 继续处理
+        id_key = make_id_key(event)
         async with message_dedup_lock:
-            if message_key in seen_events:
+            if id_key in seen_by_id:
                 return
-            seen_events.add(message_key)
+            seen_by_id.add(id_key)
+        
+        dedup_keys = make_dedup_keys(event)
         
         try:
             listener_index = clients.index(event.client)
@@ -252,7 +295,7 @@ async def handler(event):
         except ValueError:
             listener_name = 'unknown'
         
-        logger.info(f"🔔 [{listener_name}] 收到新消息 - 消息ID: {event.message.id}, 群组ID: {event.chat_id}, 去重键: {message_key}")
+        logger.info(f"🔔 [{listener_name}] 收到新消息 - 消息ID: {event.message.id}, 群组ID: {event.chat_id}, 去重键: {dedup_keys}")
         
         message_time = event.message.date
         if message_time.tzinfo is None:
@@ -275,14 +318,24 @@ async def handler(event):
         logger.info(f"🔍 检查用户名匹配 - 目标: '{target_bot_username}', 实际: '{sender.username if sender else None}'")
         
         if sender and sender.username == target_bot_username:
+            async with message_dedup_lock:
+                if is_duplicate(dedup_keys, claimed_messages) or is_duplicate(dedup_keys, sent_messages):
+                    logger.info(f"⏭️ [{listener_name}] 目标消息已认领/已发送，跳过重复: {dedup_keys}")
+                    return
+                mark_keys(dedup_keys, claimed_messages)
+                client_index = pick_sender_index(event.chat_id)
+            
             logger.info(f"✅ [{listener_name}] 匹配到目标用户: {sender.username} (ID: {sender.id})")
+            media_data = await download_message_media(event)
             await enqueue_target_message(
                 event=event,
                 listener_name=listener_name,
                 chat_id=event.chat_id,
                 msg_text=event.message.message or '',
-                media=event.message.media if event.message.media else None,
-                user_type="机器人" if sender.bot else "普通用户"
+                media_data=media_data,
+                user_type="机器人" if sender.bot else "普通用户",
+                dedup_keys=dedup_keys,
+                client_index=client_index
             )
         else:
             logger.info("❌ 用户名不匹配，跳过处理")
@@ -341,14 +394,14 @@ def create_client(account: dict) -> TelegramClient:
 
 async def main():
     global clients, active_accounts, message_queue, message_dedup_lock, start_time
-    global queued_messages, seen_events, sent_messages, our_user_ids
+    global seen_by_id, claimed_messages, sent_messages, our_user_ids
     global chat_client_index, chat_client_usage
     clients = []
     active_accounts = []
     message_queue = asyncio.Queue()
     message_dedup_lock = asyncio.Lock()
-    queued_messages = set()
-    seen_events = set()
+    seen_by_id = set()
+    claimed_messages = set()
     sent_messages = set()
     our_user_ids = set()
     chat_client_index = defaultdict(int)
